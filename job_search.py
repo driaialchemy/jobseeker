@@ -7,6 +7,7 @@ import json
 import re
 import urllib.parse
 import urllib.request
+from difflib import SequenceMatcher
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -158,6 +159,52 @@ def extract_keywords(text: str, max_terms: int = 14) -> list[str]:
     ][:max_terms]
 
 
+def normalize_match_word(word: str) -> str:
+    value = word.lower().strip(".-")
+    if len(value) > 5 and value.endswith("ies"):
+        return value[:-3] + "y"
+    for suffix in ("ing", "ers", "er", "ed", "es", "s"):
+        if len(value) > len(suffix) + 4 and value.endswith(suffix):
+            return value[: -len(suffix)]
+    return value
+
+
+def match_tokens(text: str) -> set[str]:
+    tokens = set()
+    for raw in re.findall(r"[A-Za-z][A-Za-z0-9+#.\-]{2,}", text.lower()):
+        word = raw.strip(".-")
+        if len(word) < 3 or word in STOPWORDS:
+            continue
+        tokens.add(word)
+        tokens.add(normalize_match_word(word))
+    return tokens
+
+
+def keyword_matches_text(keyword: str, tokens: set[str], fuzzy_threshold: float) -> tuple[bool, str | None]:
+    normalized_keyword = normalize_match_word(keyword)
+    if keyword in tokens or normalized_keyword in tokens:
+        return True, keyword
+
+    for token in tokens:
+        if len(token) < 4:
+            continue
+        if (
+            len(normalized_keyword) >= 5
+            and len(token) >= 5
+            and (normalized_keyword.startswith(token) or token.startswith(normalized_keyword))
+        ):
+            return True, f"{keyword}~{token}"
+        if (
+            normalized_keyword[:4] == token[:4]
+            and SequenceMatcher(None, normalized_keyword, token).ratio() >= max(0.72, fuzzy_threshold - 0.1)
+        ):
+            return True, f"{keyword}~{token}"
+        if SequenceMatcher(None, normalized_keyword, token).ratio() >= fuzzy_threshold:
+            return True, f"{keyword}~{token}"
+
+    return False, None
+
+
 def default_search_phrase(job_description: str) -> str:
     keywords = extract_keywords(job_description, max_terms=6)
     return " ".join(keywords[:5]) if keywords else "english remote"
@@ -212,21 +259,39 @@ def within_window(published_at: str, days: int, now: datetime | None = None) -> 
     return parsed >= current - timedelta(days=days)
 
 
-def score_listing(title: str, description: str, tags: list[str], keywords: list[str]) -> tuple[int, list[str]]:
+def score_listing(
+    title: str,
+    description: str,
+    tags: list[str],
+    keywords: list[str],
+    fuzzy_threshold: float = 0.84,
+) -> tuple[int, list[str]]:
     haystack = strip_html(f"{title} {' '.join(tags)} {description}").lower()
     title_lower = title.lower()
     tag_lower = " ".join(tags).lower()
+    listing_tokens = match_tokens(haystack)
+    title_tokens = match_tokens(title_lower)
+    tag_tokens = match_tokens(tag_lower)
 
     score = 0
     matches: list[str] = []
+    used_match_tokens: set[str] = set()
     for keyword in keywords:
-        if keyword not in haystack:
+        matched, match_label = keyword_matches_text(keyword, listing_tokens, fuzzy_threshold)
+        if not matched:
             continue
-        matches.append(keyword)
+
+        label = match_label or keyword
+        matched_token = label.split("~", 1)[1] if "~" in label else normalize_match_word(label)
+        if matched_token in used_match_tokens:
+            continue
+        used_match_tokens.add(matched_token)
+
+        matches.append(label)
         score += 1
-        if keyword in tag_lower:
+        if keyword_matches_text(keyword, tag_tokens, fuzzy_threshold)[0]:
             score += 1
-        if keyword in title_lower:
+        if keyword_matches_text(keyword, title_tokens, fuzzy_threshold)[0]:
             score += 3
     return score, matches
 
@@ -256,7 +321,7 @@ def fetch_remoteok_jobs(limit: int = 200) -> list[dict[str, Any]]:
     return jobs[:limit]
 
 
-def normalize_remotive(job: dict[str, Any], keywords: list[str]) -> JobListing | None:
+def normalize_remotive(job: dict[str, Any], keywords: list[str], fuzzy_threshold: float = 0.84) -> JobListing | None:
     title = str(job.get("title") or "")
     company = str(job.get("company_name") or "")
     description = strip_html(str(job.get("description") or ""))
@@ -265,7 +330,7 @@ def normalize_remotive(job: dict[str, Any], keywords: list[str]) -> JobListing |
     if job.get("category"):
         tags.append(str(job["category"]))
 
-    score, matches = score_listing(title, description, tags, keywords)
+    score, matches = score_listing(title, description, tags, keywords, fuzzy_threshold=fuzzy_threshold)
     evidence = find_english_evidence(title, description)
     return JobListing(
         source="Remotive",
@@ -282,13 +347,13 @@ def normalize_remotive(job: dict[str, Any], keywords: list[str]) -> JobListing |
     )
 
 
-def normalize_remoteok(job: dict[str, Any], keywords: list[str]) -> JobListing | None:
+def normalize_remoteok(job: dict[str, Any], keywords: list[str], fuzzy_threshold: float = 0.84) -> JobListing | None:
     title = str(job.get("position") or job.get("title") or "")
     company = str(job.get("company") or "")
     description = strip_html(str(job.get("description") or ""))
     location = str(job.get("location") or "")
     tags = [str(value) for value in (job.get("tags") or []) if value]
-    score, matches = score_listing(title, description, tags, keywords)
+    score, matches = score_listing(title, description, tags, keywords, fuzzy_threshold=fuzzy_threshold)
     evidence = find_english_evidence(title, description)
     return JobListing(
         source="RemoteOK",
@@ -326,6 +391,7 @@ def search_jobs(
     search_phrase: str | None = None,
     max_per_source: int = 80,
     min_match_score: int = 1,
+    fuzzy_threshold: float = 0.84,
     now: datetime | None = None,
 ) -> list[JobListing]:
     days = DATE_WINDOWS[date_window_label]
@@ -345,9 +411,9 @@ def search_jobs(
     for source_name, jobs in source_batches:
         for job in jobs:
             listing = (
-                normalize_remotive(job, keywords)
+                normalize_remotive(job, keywords, fuzzy_threshold=fuzzy_threshold)
                 if source_name == "remotive"
-                else normalize_remoteok(job, keywords)
+                else normalize_remoteok(job, keywords, fuzzy_threshold=fuzzy_threshold)
             )
             if not listing or listing.url in seen_urls:
                 continue

@@ -9,6 +9,7 @@ from job_search import (
     find_english_evidence,
     is_global_remote,
     keep_listing,
+    score_listing,
 )
 
 
@@ -62,6 +63,18 @@ class JobseekerTests(unittest.TestCase):
 
         now = datetime(2026, 6, 8, tzinfo=timezone.utc)
         self.assertTrue(keep_listing(listing, days=3, now=now))
+
+    def test_fuzzy_word_match_scores_close_terms(self):
+        score, matches = score_listing(
+            title="Analytics Engineer",
+            description="Build dashboards and SQL reporting for global teams.",
+            tags=["business intelligence"],
+            keywords=["analyst", "dashboard", "sql"],
+            fuzzy_threshold=0.8,
+        )
+
+        self.assertGreaterEqual(score, 3)
+        self.assertTrue(any(match.startswith("analyst~") for match in matches))
 
 
 if __name__ == "__main__":

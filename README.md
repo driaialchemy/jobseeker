@@ -11,6 +11,7 @@ remote-job sources, and keeps only listings that match all strict filters:
 - listed as remote and global/worldwide/work-from-anywhere
 - includes explicit English-language candidate evidence
 - excludes obvious non-English-primary language roles such as French or Spanish speaker postings
+- supports fuzzy word matching so close terms, plurals, and small spelling differences can still score against the pasted description
 
 Run the dashboard:
 

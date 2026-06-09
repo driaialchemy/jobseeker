@@ -18,7 +18,8 @@ with st.sidebar:
     st.header("Search")
     date_window = st.selectbox("Posted within", list(DATE_WINDOWS.keys()))
     max_per_source = st.slider("Listings per source", 25, 200, 80, step=25)
-    min_match_score = st.slider("Minimum match score", 1, 10, 3)
+    min_match_score = st.slider("Minimum match score", 1, 10, 5)
+    fuzzy_mode = st.selectbox("Fuzzy word match", ["Balanced", "Strict", "Loose"])
     strict_remote = st.checkbox("Remote and global only", value=True, disabled=True)
     strict_english = st.checkbox("English-primary evidence only", value=True, disabled=True)
 
@@ -34,6 +35,12 @@ search_phrase = st.text_input("Search phrase", value=suggested_phrase)
 run_search = st.button("Hunt for jobs", type="primary", disabled=not job_description.strip())
 
 if run_search:
+    fuzzy_threshold = {
+        "Strict": 0.9,
+        "Balanced": 0.84,
+        "Loose": 0.78,
+    }[fuzzy_mode]
+
     with st.spinner("Searching remote/global English-primary listings..."):
         try:
             listings = search_jobs(
@@ -42,6 +49,7 @@ if run_search:
                 search_phrase=search_phrase,
                 max_per_source=max_per_source,
                 min_match_score=min_match_score,
+                fuzzy_threshold=fuzzy_threshold,
             )
         except Exception as exc:
             st.error(f"Search failed: {exc}")
