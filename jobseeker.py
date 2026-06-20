@@ -89,6 +89,11 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(asdict(plan), indent=2))
     else:
         print(plan_to_text(plan))
+    from governance_logger import log_success
+    log_success("jobseeker", "Agent completed successfully", {
+        "target_role": plan.target_role,
+        "result": asdict(plan)
+    })
     return 0
 
 

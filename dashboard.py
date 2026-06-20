@@ -61,6 +61,12 @@ if run_search:
         "search_phrase": search_phrase,
         "count": len(listings),
     }
+    from governance_logger import log_success
+    log_success("jobseeker", "Agent completed successfully", {
+        "count": len(listings),
+        "search_phrase": search_phrase,
+        "result": {"matches": len(listings)}
+    })
 
 listings = st.session_state.get("job_results", [])
 last_search = st.session_state.get("last_search")
